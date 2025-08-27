@@ -8,28 +8,18 @@ static class Program
 
         SnakeBoard board = new(10, 10);
 
-        int startX, startY;
+        BoardPathfinder.BaseSnake snake = new(board, (0, 0), (0, 1), (1, 1), (2, 1), (2, 2), (1, 2), (0, 2),
+            (0, 3), (1, 3), (2, 3), (3, 3), (4, 3), (5, 3), (6, 3), (7, 3), (8, 3), (9, 3),
+            (9, 4), (8, 4), (7, 4), (6, 4), (5, 4), (4, 4), (3, 4), (2, 4), (1, 4), (0, 4)
+        );
 
-        startX = 0;
-        startY = 0;
-
-        Direction[] path = [
-            Direction.Up, Direction.Right, Direction.Right, Direction.Up, Direction.Left, Direction.Left, Direction.Up,
-            Direction.Right, Direction.Right, Direction.Right, Direction.Right, Direction.Right, Direction.Right, Direction.Right, Direction.Right, Direction.Right,
-            Direction.Up,
-            Direction.Left, Direction.Left, Direction.Left, Direction.Left, Direction.Left, Direction.Left, Direction.Left, Direction.Left, Direction.Left,
-            Direction.Up
-        ];
-
-        int snakeSize = path.Length + 1;
-
-        var pathfinder = new BoardPathfinder(board);
+        // BoardPathfinder.BaseSnake snake = new(board, (1, 1), (0, 1), (0, 2));
 
         var sw = new Stopwatch();
 
         Console.WriteLine($"Searching...");
         sw.Start();
-        Direction[] result = pathfinder.FindPath(startX, startY, path, 0, 0, out int opened, out int explored) ?? [];
+        Direction[] result = BoardPathfinder.FindPath(snake, 0, 0, out int opened, out int explored) ?? [];
         sw.Stop();
         Console.WriteLine($"Search completed in {sw.ElapsedMilliseconds} ms");
         Console.WriteLine($"Opened: {opened}, Explored: {explored}");
@@ -45,6 +35,9 @@ static class Program
         //     Search completed in 93 ms
         //     Opened: 52158, Explored: 27582
         //     That 3.1% decrease in explored cells might matter more than the 1.33µs cost per exploration once "safety checks" are added.
+        // After full rewrite (marginally faster)
+        //     Search completed in 75ms
+        //     Opened: 51383, Explored: 27582
 
         foreach (var dir in result)
         {
@@ -58,7 +51,7 @@ static class Program
             });
         }
 
-        foreach (var boardText in PlaySnakeAnimation(path.Concat(result), startX, startY, snakeSize, board))
+        foreach (var boardText in PlaySnakeAnimation(snake.Path.Concat(result), snake.Body[0].x, snake.Body[0].y, snake.Size, board))
         {
             Console.Clear();
             Console.Write(boardText);
@@ -68,13 +61,14 @@ static class Program
         }
     }
 
+    // This is disgusting, TODO: replace me o.o
     private static IEnumerable<string> PlaySnakeAnimation(IEnumerable<Direction> path, int x, int y, int snakeSize, SnakeBoard board)
     {
         Queue<(int x, int y)> body = new();
 
+        body.Enqueue((x, y));
         foreach (var dir in path)
         {
-            body.Enqueue((x, y));
             switch (dir)
             {
                 case Direction.Up:
@@ -90,6 +84,7 @@ static class Program
                     x++;
                     break;
             }
+            body.Enqueue((x, y));
 
             while (body.Count > snakeSize) body.Dequeue();
 
@@ -100,7 +95,8 @@ static class Program
 
             foreach (var (bx, by) in body)
             {
-                display[(by * (board.Width + 1)) + bx] = '#';
+                Console.WriteLine($"Drawing at {bx}, {by}");
+                display[((board.Height - by - 1) * (board.Width + 1)) + bx] = '#';
             }
 
             yield return new string(display);
