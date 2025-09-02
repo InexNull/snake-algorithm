@@ -20,7 +20,12 @@ namespace SnakeAlgorithm {
                 public readonly int y;
                 public ulong gScore;
 
-                public SnakeMove(BaseSnake baseBoard, Direction direction)
+                public readonly bool AteAppleHere;
+                public readonly int AppleCount;
+
+                public int Size => Base.Size + AppleCount;
+
+                public SnakeMove(BaseSnake baseBoard, Direction direction, bool ateApple = false)
                 {
                     Depth = 0;
                     Base = baseBoard;
@@ -34,9 +39,15 @@ namespace SnakeAlgorithm {
                         Direction.Right => (baseBoard.x + 1, baseBoard.y),
                         _ => throw new ArgumentOutOfRangeException(nameof(direction), "Invalid direction")
                     };
+
+                    if (ateApple)
+                    {
+                        AteAppleHere = true;
+                        AppleCount = 1;
+                    }
                 }
 
-                public SnakeMove(SnakeMove previous, Direction direction, ulong travelCost)
+                public SnakeMove(SnakeMove previous, Direction direction, ulong travelCost, bool ateApple = false)
                 {
                     Depth = previous.Depth + 1;
                     Base = previous.Base;
@@ -51,35 +62,70 @@ namespace SnakeAlgorithm {
                         Direction.Right => (previous.x + 1, previous.y),
                         _ => throw new ArgumentOutOfRangeException(nameof(direction), "Invalid direction")
                     };
+
+                    if (ateApple)
+                    {
+                        AteAppleHere = true;
+                        AppleCount = previous.AppleCount + 1;
+                    }
+                    else
+                    {
+                        AppleCount = previous.AppleCount;
+                    }
                 }
 
-                public bool IsLegal()
+                public BaseSnake BuildSnake()
                 {
-                    // Bounds check                    
-                    if (x < 0 || x >= Base.Board.Width || y < 0 || y >= Base.Board.Height)
-                        return false;
+                    int length = Base.Size + AppleCount;
+                    (int, int)[] body = new (int, int)[length];
+                    var current = this;
+                    int i;
+                    // Iterate back through the path
+                    for (i = 0; i < length && current != null; i++)
+                    {
+                        body[i] = (current.x, current.y);
+                        current = current.Previous;
+                    }
 
-                    // Quick check if our base body is in the way
-                    if (Base.OccupiedMap.TryGetValue((x, y), out int occupiedUntil) && occupiedUntil > Depth)
-                        return false;
+                    // Iterate back through the base body
+                    int j = Base.Size - 1;
+                    for (; i < length; i++)
+                    {
+                        body[i] = Base.Body[j--];
+                    }
 
-                    // Reverse check back down the body
-                    for (var piece = Previous; piece != null && piece.Depth > Depth - Base.Size; piece = piece.Previous)
-                        if (piece.x == x && piece.y == y)
-                            return false;
+                    Array.Reverse(body);
 
-                    return true;
+                    return new BaseSnake(Base.Board, body);
                 }
+
+                // public bool IsLegal()
+                // {
+                //     // Bounds check                    
+                //     if (x < 0 || x >= Base.Board.Width || y < 0 || y >= Base.Board.Height)
+                //         return false;
+
+                //     // Quick check if our base body is in the way
+                //     if (Base.OccupiedMap.TryGetValue((x, y), out int occupiedUntil) && occupiedUntil > Depth - AppleCount)
+                //         return false;
+
+                //     // Reverse check back down the body
+                //     for (var piece = Previous; piece != null && piece.Depth > Depth - Base.Size - AppleCount; piece = piece.Previous)
+                //         if (piece.x == x && piece.y == y)
+                //             return false;
+
+                //     return true;
+                // }
 
                 public bool IsPositionLegal(int cx, int cy)
                 {
                     if (cx < 0 || cx >= Base.Board.Width || cy < 0 || cy >= Base.Board.Height)
                         return false;
 
-                    if (Base.OccupiedMap.TryGetValue((cx, cy), out int occupiedUntil) & occupiedUntil > Depth + 1)
+                    if (Base.OccupiedMap.TryGetValue((cx, cy), out int occupiedUntil) && occupiedUntil > Depth + 1 - AppleCount)
                         return false;
 
-                    for (var piece = Previous; piece != null && piece.Depth > Depth + 1 - Base.Size; piece = piece.Previous)
+                    for (var piece = Previous; piece != null && piece.Depth > Depth + 1 - Base.Size - AppleCount; piece = piece.Previous)
                         if (piece.x == cx && piece.y == cy)
                             return false;
 
@@ -113,7 +159,8 @@ namespace SnakeAlgorithm {
                 }
             }
             public readonly SnakeBoard Board;
-            private (int x, int y)[] _body;
+            private readonly (int x, int y)[] _body;
+            private readonly (int x, int y)[] _openSpace;
             private Direction[] _path;
             private readonly int _size;
 
@@ -122,6 +169,11 @@ namespace SnakeAlgorithm {
             public readonly FrozenDictionary<(int x, int y), int> OccupiedMap;
             public int Size => _size;
             public readonly int x, y;
+
+            public (int x, int y) PickRandomCell(Random rand)
+            {
+                return _openSpace[rand.Next(_openSpace.Length)];
+            }
 
             public bool WithinBounds(int x, int y)
             {
@@ -164,6 +216,20 @@ namespace SnakeAlgorithm {
                 OccupiedMap = occupiedMap.ToFrozenDictionary();
 
                 (x, y) = _body[^1];
+
+                IEnumerable<(int x, int y)> openSpaceGen()
+                {
+                    for (int oy = 0; oy < Board.Height; oy++)
+                    {
+                        for (int ox = 0; ox < Board.Width; ox++)
+                        {
+                            if (!OccupiedMap.ContainsKey((ox, oy)))
+                                yield return (ox, oy);
+                        }
+                    }
+                }
+
+                _openSpace = [.. openSpaceGen()];
             }
 
             public ulong[] GenerateDijkstraHeuristic(int targetX, int targetY)
@@ -232,7 +298,7 @@ namespace SnakeAlgorithm {
         // Also means additional conditions can be added, mainly, adding a check that the snake isn't trapped and verify with this before each move to make the trip safely
 
         // TODO: This evaluates ALL paths including loops for example, consider trying to detect these early?
-        public static Direction[]? FindPath(BaseSnake snake, int targetX, int targetY, out int cellsOpened, out int cellsExplored)
+        public static BaseSnake.SnakeMove? FindPath(BaseSnake snake, int targetX, int targetY, out int cellsOpened, out int cellsExplored)
         {
             // For performance debug
             cellsOpened = 0;
@@ -275,11 +341,13 @@ namespace SnakeAlgorithm {
 
             while (openSet.TryDequeue(out var current, out _))
             {
+                if (!SafetyChecker.IsSafe(current))
+                    continue;
                 cellsExplored++;
                 if (current.x == targetX && current.y == targetY)
                 {
                     // Reached the target, return the path
-                    return current.MakePath();
+                    return current;
                 }
 
                 void TryOpen(Direction dir, int cx, int cy, ref int cellsOpened)

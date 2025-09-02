@@ -1,48 +1,146 @@
 ﻿using SnakeAlgorithm;
 using System.Diagnostics;
+using static SnakeAlgorithm.BoardPathfinder;
 
 static class Program
 {
     public static void Main(string[] args)
     {
-
-        SnakeBoard board = new(11, 10);
-
-        BoardPathfinder.BaseSnake snake = new(board, (0, 0), (0, 1), (1, 1), (2, 1), (2, 2), (1, 2), (0, 2),
-            (0, 3), (1, 3), (2, 3), (3, 3), (4, 3), (5, 3), (6, 3), (7, 3), (8, 3), (9, 3),
-            (9, 4), (8, 4), (7, 4), (6, 4), (5, 4), (4, 4), (3, 4), (2, 4), (1, 4), (0, 4)
-        );
-
-        var sw = new Stopwatch();
-
-        Console.WriteLine($"Searching...");
-        sw.Start();
-        Direction[] result = BoardPathfinder.FindPath(snake, 0, 0, out int opened, out int explored) ?? [];
-        sw.Stop();
-
         // On a 10x10 pattern where the snake cuts itself off:
         // Before BFS heuristic:
         //     Search completed in 5019 ms
         //     Opened: 5501987, Explored: 3522046
+
         // After BFS heuristic (improves self-awareness on its body's initial positioning, huge speed and efficiency bonus):
         //     Search completed in 58 ms
         //     Opened: 53844, Explored: 28465
+
         // After self-hugging bonus (makes cleaner patterns, was a slight efficiency improvement at the cost of speed):
         //     Search completed in 93 ms
         //     Opened: 52158, Explored: 27582
         //     That 3.1% decrease in explored cells might matter more than the 1.33µs cost per exploration once "safety checks" are added.
+
         // After full rewrite (marginally faster) (I'm not entierly sure the paths are the same)
         //     Search completed in 75ms
         //     Opened: 51383, Explored: 27582
 
-        foreach (var boardText in PlaySnakeAnimation(snake.Body, result, board))
+        // It is at this point I realized my Dijstra's heuristic is not admissable, However, fixing it is orders of magnitudes slower,
+        // so I'm just going to accept slightly less accurate pathing for the efficiency.
+
+        // After the easy safety check (ignores the concept of apples, simple "can I move" checks):
+        //     Search completed in 299ms
+        //     Opened: 52158, Explored: 27582
+
+        // There was no improvement in searching which I was somewhat suprised by, I figured it might circle itself blindly
+        // and notice a few cells earlier it was a bad idea than normal. Maybe this is in part due to the Dijstra weight.
+
+
+        foreach (var boardText in InfiniteSnake(10, 10, 40))
         {
             Console.Clear();
             Console.Write(boardText);
-            Console.WriteLine($"Search completed in {sw.ElapsedMilliseconds} ms");
-            Console.WriteLine($"Opened: {opened}, Explored: {explored}");
-            Thread.Sleep(300);
+            Thread.Sleep(150);
         }
+    }
+
+    private static IEnumerable<string> InfiniteSnake(int width, int height, int snakeLength)
+    {
+        Random rand = new Random();
+        if (snakeLength > width * height) throw new ArgumentOutOfRangeException(nameof(snakeLength), "Snake length cannot be larger than the board size");
+
+        IEnumerable<(int x, int y)> GenerateBody()
+        {
+            int len = snakeLength;
+
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    if (len == 0) yield break;
+                    yield return (y % 2 == 0 ? x : width - 1 - x, y);
+                    len--;
+                }
+            }
+        }
+
+        SnakeBoard board = new(width, height);
+        BaseSnake snake = new(board, [.. GenerateBody()]);
+        
+        Queue<(int x, int y)> body = new();
+        int headX = 0, headY = 0;
+        foreach (var pos in snake.Body) {
+            body.Enqueue(pos);
+        }
+
+        // Pick first path
+        (int x, int y) target = snake.PickRandomCell(rand);
+        Task<BaseSnake.SnakeMove?> pathTask = Task.Run(() => FindPath(snake, target.x, target.y, out int opened, out int explored));
+        
+        char[] displayTemplate = new char[(board.Width + 1) * board.Height];
+        for (int i = 0; i < displayTemplate.Length; i++) displayTemplate[i] = ' '; // Fill with spaces
+        for (int i = 0; i < board.Height; i++) displayTemplate[(i + 1) * (board.Width + 1) - 1] = '\n'; // Fill newlines
+
+        char[] display = new char[displayTemplate.Length];
+
+
+        while (true)
+        {
+            headX = snake.Body[^1].x;
+            headY = snake.Body[^1].y;
+            var path = pathTask.Result;
+            if (path == null)
+            {
+                break;
+            }
+            // Move the snake and start the next search
+            var ogSnake = snake;
+            snake = path.BuildSnake();
+            (int x, int y) newTarget = snake.PickRandomCell(rand);
+            pathTask = Task.Run(() => FindPath(snake, newTarget.x, newTarget.y, out int opened, out int explored));
+
+            foreach (var move in path.MakePath())
+            {
+                switch (move)
+                {
+                    case Direction.Up:
+                        headY++;
+                        break;
+                    case Direction.Down:
+                        headY--;
+                        break;
+                    case Direction.Left:
+                        headX--;
+                        break;
+                    case Direction.Right:
+                        headX++;
+                        break;
+                }
+
+                string Draw()
+                {
+                    Array.Copy(displayTemplate, display, displayTemplate.Length);
+
+                    // mark target
+                    display[((board.Height - target.y - 1) * (board.Width + 1)) + target.x] = '\u00B7'; // Center dot
+
+                    foreach (var (bx, by) in body)
+                    {
+                        display[((board.Height - by - 1) * (board.Width + 1)) + bx] = '#';
+                    }
+                    Console.WriteLine(snake.Size);
+                    return new string(display);
+                }
+
+                body.Dequeue();
+                yield return Draw();
+                body.Enqueue((headX, headY));
+                yield return Draw();
+            }
+
+            target = newTarget;
+        }
+
+
     }
 
     private static IEnumerable<string> PlaySnakeAnimation(IEnumerable<(int x, int y)> path, IEnumerable<Direction> moves, SnakeBoard board)
@@ -67,7 +165,7 @@ static class Program
         {
             display[((board.Height - by - 1) * (board.Width + 1)) + bx] = '#';
         }
-        yield return new string(display);
+        // yield return new string(display);
 
 
         foreach (var dir in moves)
