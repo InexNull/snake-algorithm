@@ -185,14 +185,14 @@ namespace SnakeAlgorithm {
                 if (body.Length < 1)
                     throw new ArgumentException("Snake must have at least one body part", nameof(body));
 
+                // Initialize fields
                 Board = board;
-
                 _size = body.Length;
                 _body = [.. body];
                 _path = new Direction[body.Length - 1];
 
+                // Generate a map of the cells that the snake is occupying, with the turn index that they will be freed at
                 Dictionary<(int x, int y), int> occupiedMap = [];
-
                 for (int i = 0; i < _path.Length; i++)
                 {
                     int yOffset = _body[i + 1].y - _body[i].y;
@@ -213,10 +213,13 @@ namespace SnakeAlgorithm {
                 if (!occupiedMap.TryAdd(_body[^1], _body.Length - 1))
                     throw new ArgumentException("Body intersects itself", nameof(body));
 
+                // Freeze the dictionary for faster reads
                 OccupiedMap = occupiedMap.ToFrozenDictionary();
 
+                // Record head position
                 (x, y) = _body[^1];
 
+                // Make an array of the unoccupied spaces
                 IEnumerable<(int x, int y)> openSpaceGen()
                 {
                     for (int oy = 0; oy < Board.Height; oy++)
@@ -309,48 +312,45 @@ namespace SnakeAlgorithm {
             ulong[] hScoreMap = snake.GenerateDijkstraHeuristic(targetX, targetY);
             PriorityQueue<BaseSnake.SnakeMove, ulong> openSet = new();
 
+            int[] moveOffsets = new int[4];
+            moveOffsets[(int)Direction.Up] = width;
+            moveOffsets[(int)Direction.Down] = -width;
+            moveOffsets[(int)Direction.Left] = -1;
+            moveOffsets[(int)Direction.Right] = 1;
+
+            // can't use an out parameter in a local function, so I have to return the change to cellsOpened
+            int TryOpenStartingCell(Direction dir) {
+                // Ensure it is a valid move
+                if (!snake.IsMoveLegal(dir)) return 0;
+
+                // Create move, enqueue priority by h score
+                int positionIndex = snake.x + snake.y * width + moveOffsets[(int)dir];
+                openSet.Enqueue(new BaseSnake.SnakeMove(snake, dir), hScoreMap[positionIndex]);
+                return 1;
+            }
+
             // Open first 4 cells
-            if (snake.IsMoveLegal(Direction.Up))
-            {
-                openSet.Enqueue(new BaseSnake.SnakeMove(snake, Direction.Up), hScoreMap[snake.x + (snake.y + 1) * width]);
-                cellsOpened++;
-            }
+            cellsOpened += TryOpenStartingCell(Direction.Up);
+            cellsOpened += TryOpenStartingCell(Direction.Down);
+            cellsOpened += TryOpenStartingCell(Direction.Left);
+            cellsOpened += TryOpenStartingCell(Direction.Right);
 
-            if (snake.IsMoveLegal(Direction.Down))
-            {
-                openSet.Enqueue(new BaseSnake.SnakeMove(snake, Direction.Down), hScoreMap[snake.x + (snake.y - 1) * width]);
-                cellsOpened++;
-            }
-
-            if (snake.IsMoveLegal(Direction.Left))
-            {
-                openSet.Enqueue(new BaseSnake.SnakeMove(snake, Direction.Left), hScoreMap[snake.x - 1 + snake.y * width]);
-                cellsOpened++;
-            }
-
-            if (snake.IsMoveLegal(Direction.Right))
-            {
-                openSet.Enqueue(new BaseSnake.SnakeMove(snake, Direction.Right), hScoreMap[snake.x + 1 + snake.y * width]);
-                cellsOpened++;
-            }
-
-            // No two paths can ever visit the same node, revisiting is *not possible*
+            // No two paths can ever visit the same node, revisiting is *not possible*, so no closed set (we won't find a match)
             // HashSet<ulong> closedSet = [];
             // Similarly, we do not need a gscore.
             // fScore is the only value that matters, and is stored in the openSet priority queue
 
             while (openSet.TryDequeue(out var current, out _))
             {
+                cellsExplored++;
+                // Check that we're not trapped & going to fail
                 if (!SafetyChecker.IsSafe(current))
                     continue;
-                cellsExplored++;
+                // If we reached the target (now safely), return the path
                 if (current.x == targetX && current.y == targetY)
-                {
-                    // Reached the target, return the path
                     return current;
-                }
 
-                void TryOpen(Direction dir, int cx, int cy, ref int cellsOpened)
+                int TryOpen(Direction dir)
                 {
                     // Keeps movement very large so smaller penalties can be added without impacting the length
                     // Basically small costs will act as tiebreakers
@@ -358,7 +358,7 @@ namespace SnakeAlgorithm {
                     const ulong nonHugCost = 1ul;
 
                     if (!current.IsMoveLegal(dir))
-                        return;
+                        return 0;
 
                     bool isHorizontal = dir is Direction.Left or Direction.Right;
 
@@ -388,14 +388,14 @@ namespace SnakeAlgorithm {
                     // Make next
                     var next = new BaseSnake.SnakeMove(current, dir, cost);
                     // Enqueue with f score
-                    openSet.Enqueue(next, cost + hScoreMap[cx + cy * width] * baseCostMultiplier);
-                    cellsOpened++;
+                    openSet.Enqueue(next, cost + hScoreMap[current.x + current.y * width + moveOffsets[(int)dir]] * baseCostMultiplier);
+                    return 1;
                 }
 
-                TryOpen(Direction.Up, current.x, current.y + 1, ref cellsOpened);
-                TryOpen(Direction.Down, current.x, current.y - 1, ref cellsOpened);
-                TryOpen(Direction.Left, current.x - 1, current.y, ref cellsOpened);
-                TryOpen(Direction.Right, current.x + 1, current.y, ref cellsOpened);
+                cellsOpened += TryOpen(Direction.Up);
+                cellsOpened += TryOpen(Direction.Down);
+                cellsOpened += TryOpen(Direction.Left);
+                cellsOpened += TryOpen(Direction.Right);
             }
 
             return null; // No path found
