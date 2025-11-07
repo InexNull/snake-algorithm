@@ -35,11 +35,31 @@ static class Program
         // and notice a few cells earlier it was a bad idea than normal. Maybe this is in part due to the Dijstra weight.
 
 
-        foreach (var boardText in InfiniteSnake(10, 10, 40))
+        int width = ReadInt("Board Width (3-20): ", 3, 20);
+        int height = ReadInt("Board Height (3-20): ", 3, 20);
+        int length = ReadInt($"Snake Length (4-{width * height / 2}): ", 4, width * height / 2);
+
+        Console.WriteLine("Starting!");
+        Thread.Sleep(150);
+        foreach (var boardText in InfiniteSnake(width, height, length))
         {
             Console.Clear();
             Console.Write(boardText);
+            Console.WriteLine("Press CTRL-C to stop.");
             Thread.Sleep(150);
+        }
+        Console.WriteLine("Stopping!");
+    }
+
+    private static int ReadInt(string prompt, int min, int max)
+    {
+        Console.Write(prompt);
+        while (true)
+        {
+            string? input = Console.ReadLine();
+            if (int.TryParse(input, out int value) && value >= min && value <= max)
+                return value;
+            Console.Write($"Please enter an integer between {min} and {max}: ");
         }
     }
 
@@ -67,7 +87,6 @@ static class Program
         BaseSnake snake = new(board, [.. GenerateBody()]);
         
         Queue<(int x, int y)> body = new();
-        int headX = 0, headY = 0;
         foreach (var pos in snake.Body) {
             body.Enqueue(pos);
         }
@@ -83,6 +102,7 @@ static class Program
         char[] display = new char[displayTemplate.Length];
 
 
+        int headX = 0, headY = 0;
         while (true)
         {
             headX = snake.Body[^1].x;
