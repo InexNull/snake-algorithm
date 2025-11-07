@@ -37,7 +37,8 @@ static class Program
 
         int width = ReadInt("Board Width (3-20): ", 3, 20);
         int height = ReadInt("Board Height (3-20): ", 3, 20);
-        int length = ReadInt($"Snake Length (4-{width * height / 2}): ", 4, width * height / 2);
+        int maxLength = width * height / 2; // It could handle something greater, however, the way it spawns the snake is suboptimal
+        int length = ReadInt($"Snake Length (4-{maxLength}): ", 4, maxLength);
 
         Console.WriteLine("Starting!");
         Thread.Sleep(150);
@@ -93,7 +94,7 @@ static class Program
 
         // Pick first path
         (int x, int y) target = snake.PickRandomCell(rand);
-        Task<BaseSnake.SnakeMove?> pathTask = Task.Run(() => FindPath(snake, target.x, target.y, out int opened, out int explored));
+        Task<BaseSnake.SnakeMove?> pathTask = Task.Run(() => FindPath(snake, target.x, target.y, out int opened, out int explored, Environment.ProcessorCount));
         
         char[] displayTemplate = new char[(board.Width + 1) * board.Height];
         for (int i = 0; i < displayTemplate.Length; i++) displayTemplate[i] = ' '; // Fill with spaces

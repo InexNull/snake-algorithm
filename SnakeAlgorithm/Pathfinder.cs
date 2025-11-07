@@ -301,7 +301,7 @@ namespace SnakeAlgorithm {
         // Also means additional conditions can be added, mainly, adding a check that the snake isn't trapped and verify with this before each move to make the trip safely
 
         // TODO: This evaluates ALL paths including loops for example, consider trying to detect these early?
-        public static BaseSnake.SnakeMove? FindPath(BaseSnake snake, int targetX, int targetY, out int cellsOpened, out int cellsExplored)
+        public static BaseSnake.SnakeMove? FindPath(BaseSnake snake, int targetX, int targetY, out int cellsOpened, out int cellsExplored, int threads=1)
         {
             // For performance debug
             cellsOpened = 0;
@@ -340,65 +340,175 @@ namespace SnakeAlgorithm {
             // Similarly, we do not need a gscore.
             // fScore is the only value that matters, and is stored in the openSet priority queue
 
-            while (openSet.TryDequeue(out var current, out _))
+            object _lock = new();
+            // Tracks active workers, so when all enter a waiting mode, we know we ran out of stuff to search
+            int activeWorkers = threads;
+            // Perfectly timed threads can solve a path at once, so we record all and pick one at the end
+            List<BaseSnake.SnakeMove> returnedItems = [];
+            List<int> cellsOpenedMetrics = [];
+            List<int> cellsExploredMetrics = [];
+            
+
+            void Thread()
             {
-                cellsExplored++;
-                // Check that we're not trapped & going to fail
-                if (!SafetyChecker.IsSafe(current))
-                    continue;
-                // If we reached the target (now safely), return the path
-                if (current.x == targetX && current.y == targetY)
-                    return current;
-
-                int TryOpen(Direction dir)
+                List<(BaseSnake.SnakeMove move, ulong cost)> toEnqueue = []; // re-used list
+                int cellsOpenedHere = 0;
+                int cellsExploredHere = 0;
+                while (true)
                 {
-                    // Keeps movement very large so smaller penalties can be added without impacting the length
-                    // Basically small costs will act as tiebreakers
-                    const ulong baseCostMultiplier = 1ul << 31;
-                    const ulong nonHugCost = 1ul;
+                    BaseSnake.SnakeMove current;
 
-                    if (!current.IsMoveLegal(dir))
-                        return 0;
-
-                    bool isHorizontal = dir is Direction.Left or Direction.Right;
-
-                    // Get g score
-                    var cost = current.gScore + baseCostMultiplier;
-
-                    // Add micro costs to tidy path
-                    if (isHorizontal)
+                    lock (_lock)
                     {
-                        bool leftClosed = current.IsPositionLegal(current.x - 1, current.y);
-                        bool rightClosed = current.IsPositionLegal(current.x + 1, current.y);
-
-                        // Reward taking paths that are up against itself or a wall (with a 1 point cost)
-                        if (!(leftClosed ^ rightClosed))
-                            cost += nonHugCost;
+                        // Someone's already found a path. The queue is ordered, so our next item can't be better.
+                        if (returnedItems.Count > 0)
+                        {
+                            // Wake everything up, we're done
+                            Monitor.PulseAll(_lock);
+                            // Stop
+                            cellsOpenedMetrics.Add(cellsOpenedHere);
+                            cellsExploredMetrics.Add(cellsExploredHere);
+                            return;
+                        }
+                        // Try to take an item
+                        if (!openSet.TryDequeue(out current!, out _))
+                        {
+                            // No item, record that we're waiting (not active)
+                            activeWorkers--;
+                            // If there's no more waiting, we've exhausted all options, wake others up so they can stop & stop self
+                            if (activeWorkers == 0)
+                            {
+                                Monitor.PulseAll(_lock);
+                                cellsOpenedMetrics.Add(cellsOpenedHere);
+                                cellsExploredMetrics.Add(cellsExploredHere);
+                                return;
+                            }
+                            // Otherwise, enter waiting mode until something happens
+                            Monitor.Wait(_lock);
+                            while (true)
+                            {
+                                // Something happened -- stop if a solution was already found
+                                if (returnedItems.Count > 0)
+                                {
+                                    cellsOpenedMetrics.Add(cellsOpenedHere);
+                                    cellsExploredMetrics.Add(cellsExploredHere);
+                                    return;
+                                }
+                                // Try to take an item
+                                if (openSet.TryDequeue(out current!, out _))
+                                {
+                                    // Success, wake up and keep going
+                                    activeWorkers++;
+                                    break;
+                                }
+                                // If there's no active workers, the pulse must've been to shut down, turn off.
+                                if (activeWorkers == 0)
+                                {
+                                    cellsOpenedMetrics.Add(cellsOpenedHere);
+                                    cellsExploredMetrics.Add(cellsExploredHere);
+                                    return;
+                                }
+                                // We got pulsed, have nothing to do, but it's not over yet. Resume waiting.
+                                Monitor.Wait(_lock);
+                            }
+                        }
                     }
-                    else
+
+                    cellsExploredHere++;
+
+                    // Check that we're not trapped & going to fail
+                    if (!SafetyChecker.IsSafe(current))
+                        continue;
+                    // If we reached the target (now safely), return the path
+                    if (current.x == targetX && current.y == targetY)
                     {
-                        bool topClosed = current.IsPositionLegal(current.x, current.y - 1);
-                        bool bottomClosed = current.IsPositionLegal(current.x, current.y + 1);
-
-                        // Reward taking paths that are up against itself or a wall (with a 1 point cost)
-                        if (!(topClosed ^ bottomClosed))
-                            cost += nonHugCost;
+                        lock (_lock)
+                        {
+                            returnedItems.Add(current); // Record the solution
+                            cellsOpenedMetrics.Add(cellsOpenedHere);
+                            cellsExploredMetrics.Add(cellsExploredHere);
+                            Monitor.PulseAll(_lock); // Wake up, we're done!
+                            return;
+                        }
                     }
 
-                    // Make next
-                    var next = new BaseSnake.SnakeMove(current, dir, cost);
-                    // Enqueue with f score
-                    openSet.Enqueue(next, cost + hScoreMap[current.x + current.y * width + moveOffsets[(int)dir]] * baseCostMultiplier);
-                    return 1;
+                    void TryOpen(Direction dir)
+                    {
+                        // Keeps movement very large so smaller penalties can be added without impacting the length
+                        // Basically small costs will act as tiebreakers
+                        const ulong baseCostMultiplier = 1ul << 31;
+                        const ulong nonHugCost = 1ul;
+
+                        if (!current.IsMoveLegal(dir))
+                            return;
+
+                        bool isHorizontal = dir is Direction.Left or Direction.Right;
+
+                        // Get g score
+                        var cost = current.gScore + baseCostMultiplier;
+
+                        // Add micro costs to tidy path
+                        if (isHorizontal)
+                        {
+                            bool leftClosed = current.IsPositionLegal(current.x - 1, current.y);
+                            bool rightClosed = current.IsPositionLegal(current.x + 1, current.y);
+
+                            // Reward taking paths that are up against itself or a wall (with a 1 point cost)
+                            if (!(leftClosed ^ rightClosed))
+                                cost += nonHugCost;
+                        }
+                        else
+                        {
+                            bool topClosed = current.IsPositionLegal(current.x, current.y - 1);
+                            bool bottomClosed = current.IsPositionLegal(current.x, current.y + 1);
+
+                            // Reward taking paths that are up against itself or a wall (with a 1 point cost)
+                            if (!(topClosed ^ bottomClosed))
+                                cost += nonHugCost;
+                        }
+
+                        // Make next
+                        var next = new BaseSnake.SnakeMove(current, dir, cost);
+                        // All locally so we can enqueue after acquiring the lock
+                        toEnqueue.Add((next, cost + hScoreMap[current.x + current.y * width + moveOffsets[(int)dir]] * baseCostMultiplier));
+                        cellsOpenedHere += 1;
+                    }
+
+                    TryOpen(Direction.Up);
+                    TryOpen(Direction.Down);
+                    TryOpen(Direction.Left);
+                    TryOpen(Direction.Right);
+
+                    // Enqueue all at once, synchronously
+                    if (toEnqueue.Count > 0)
+                    {
+                        lock (_lock)
+                        {
+                            for (int i = 0; i < toEnqueue.Count; i++)
+                            {
+                                openSet.Enqueue(toEnqueue[i].move, toEnqueue[i].cost);
+                            }
+                            Monitor.PulseAll(_lock); // Wake up waiting threads
+                        }
+                        toEnqueue.Clear();
+                    }
                 }
-
-                cellsOpened += TryOpen(Direction.Up);
-                cellsOpened += TryOpen(Direction.Down);
-                cellsOpened += TryOpen(Direction.Left);
-                cellsOpened += TryOpen(Direction.Right);
             }
 
-            return null; // No path found
+            // Run tasks
+            Task[] tasks = new Task[threads];
+            for (int i = 0; i < tasks.Length; i++)
+            {
+                tasks[i] = Task.Run(Thread);
+            }
+            Task.WaitAll(tasks);
+
+            // Add metrics
+            foreach (var open in cellsOpenedMetrics) cellsOpened += open;
+            foreach (var explore in cellsExploredMetrics) cellsExplored += explore;
+
+            if (returnedItems.Count == 0) return null; // No solution
+            return returnedItems.MinBy(a => a.Depth); // Return smallest solution
         }
     }
 }
